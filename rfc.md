@@ -292,52 +292,7 @@ Redis на этом пути только ускоряет чтение пред
 
 #### Диаграмма C4 Container
 
-```plantuml
-@startuml
-!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
-
-LAYOUT_TOP_DOWN()
-title Вариант 1. C4 Container. Транзакционная доставка
-
-Person(support, "Поддержка", "Читает статус доставки")
-System_Ext(producers, "Сервисы-заказчики", "Переводы / платежи / карты / безопасность")
-System_Ext(pushp, "FCM / APNs", "ACK push")
-System_Ext(emailp, "Email-провайдер", "Синхронный accept")
-System_Ext(smsp, "SMS-агрегатор", "Синхронный accept")
-
-System_Boundary(np, "Notification Platform") {
-  Container(api, "Ingest API", "HTTP", "Ответ только после записи приёма")
-  ContainerDb(pg, "PostgreSQL", "PostgreSQL", "Уведомления / попытки / outbox / настройки")
-  Container(relay, "Outbox Relay", "worker", "Публикует outbox в Kafka")
-  Container(kafka, "Kafka", "Apache Kafka", "Команды и исходы транзакций")
-  Container(router, "Delivery Router", "worker", "Политика каналов и одна активная попытка")
-  ContainerDb(redis, "Redis", "Redis", "Кэш настроек и предохранители")
-  Container(push, "Push Adapter", "worker", "Вызов FCM или APNs")
-  Container(email, "Email Adapter", "worker", "Вызов email-провайдера")
-  Container(sms, "SMS Adapter", "worker", "Вызов SMS-агрегатора")
-  Container(recon, "Reconciliation", "worker", "Неизвестные исходы и зависшие попытки")
-}
-
-Rel(producers, api, "Команда уведомления", "HTTPS")
-Rel(api, pg, "Уведомление и outbox", "SQL")
-Rel(support, api, "Чтение статуса", "HTTPS")
-Rel(relay, pg, "Непубликованный outbox", "SQL")
-Rel(relay, kafka, "Команда доставки", "Kafka")
-Rel(kafka, router, "Команда", "Kafka")
-Rel(router, redis, "Кэш и предохранитель", "Redis")
-Rel(router, pg, "Попытка и статус", "SQL")
-Rel(router, kafka, "Команда канала", "Kafka")
-Rel(kafka, push, "Push", "Kafka")
-Rel(kafka, email, "Email", "Kafka")
-Rel(kafka, sms, "SMS", "Kafka")
-Rel(push, pushp, "Отправка и статус", "HTTPS")
-Rel(email, emailp, "Отправка и статус", "HTTPS")
-Rel(sms, smsp, "Отправка и статус", "HTTPS")
-Rel(recon, pg, "Сверка попытки", "SQL")
-Rel(recon, pushp, "Статус по ключу", "HTTPS")
-
-@enduml
-```
+![Вариант 1. C4 Container](diagrams/v1-c4.png)
 
 Пользователь на диаграмме контейнеров не показан: показ на устройстве не является ACK и в контракт платформы не входит. ACK приходит от провайдера в адаптер.
 
@@ -345,97 +300,13 @@ Rel(recon, pushp, "Статус по ключу", "HTTPS")
 
 Предпочтение — push, FCM принимает сообщение с первого вызова. SMS и email не вызываются.
 
-```plantuml
-@startuml
-title Вариант 1. Основной сценарий: push принят
-
-actor "Сервис переводов" as src
-participant "Ingest API" as api
-database "PostgreSQL" as pg
-participant "Outbox Relay" as relay
-queue "Kafka" as kafka
-participant "Delivery Router" as router
-database "Redis" as redis
-participant "Push Adapter" as push
-participant "FCM / APNs" as fcm
-
-src -> api: Команда\nключ идемпотентности
-api -> pg: Фиксация уведомления и outbox
-api --> src: Принято, идентификатор
-pg -> relay: Сигнал outbox
-relay -> kafka: Команда доставки
-kafka -> router: Команда
-router -> redis: Снимок предпочтения
-router -> pg: Одна попытка push «выполняется»
-router -> kafka: Команда канала push
-kafka -> push: Команда
-push -> fcm: Отправка\nключ notification+push
-fcm --> push: ACK, внешний идентификатор
-push -> kafka: Исход: принят
-kafka -> router: Исход
-router -> pg: Уведомление «доставлено»
-note over router, fcm
-  Email и SMS не вызываются.
-  Повтор команды отправителя
-  вернёт тот же идентификатор.
-end note
-
-@enduml
-```
+![Вариант 1. Основной сценарий](diagrams/v1-main.png)
 
 #### Sequence: failover
 
 Префикс до первой попытки совпадает с основным сценарием. Диаграмма начинается с уже принятой команды и попытки push.
 
-```plantuml
-@startuml
-title Вариант 1. Failover: отказ push, затем email или SMS
-
-participant "Delivery Router" as router
-database "PostgreSQL" as pg
-queue "Kafka" as kafka
-participant "Push Adapter" as push
-participant "FCM / APNs" as fcm
-participant "Email Adapter" as email
-participant "Email-провайдер" as esp
-participant "SMS Adapter" as sms
-
-push -> fcm: Отправка, ключ push
-fcm --> push: Отказ
-push -> kafka: Исход: отвергнут
-kafka -> router: Исход
-router -> pg: Попытка push закрыта\nпопытка email «выполняется»
-router -> kafka: Команда канала email
-note over router
-  Пока email не завершён, SMS не вызывается.
-end note
-
-kafka -> email: Команда
-email -> esp: Отправка, ключ email
-
-alt Email принял сообщение
-  esp --> email: ACK
-  email -> kafka: Исход: принят
-  kafka -> router: Исход
-  router -> pg: Уведомление «доставлено»
-  note over sms
-    SMS не вызывается.
-    Второй ACK по этому уведомлению запрещён.
-  end note
-else Email тоже отвергнут
-  esp --> email: Отказ
-  email -> kafka: Исход: отвергнут
-  kafka -> router: Исход
-  router -> pg: Попытка SMS «выполняется»
-  router -> kafka: Команда канала SMS
-  kafka -> sms: Команда
-  note over sms
-    Повторы этого канала идут с тем же ключом SMS.
-  end note
-end
-
-@enduml
-```
+![Вариант 1. Failover](diagrams/v1-failover.png)
 
 Отдельная ветка потерянного ответа, её исполняет тот же маршрутизатор. Адаптер повторяет тот же ключ. Если провайдер на повторе отвечает «уже принято», попытка закрывается успехом, email не начинается. Сверка подбирает попытку, зависшую после падения процесса.
 
@@ -513,128 +384,15 @@ Redis используется так же, как в варианте 1: кэш
 
 #### Диаграмма C4 Container
 
-```plantuml
-@startuml
-!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
-
-LAYOUT_TOP_DOWN()
-title Вариант 2. C4 Container. Очереди RabbitMQ
-
-Person(support, "Поддержка", "Читает статус доставки")
-System_Ext(producers, "Сервисы-заказчики", "Переводы / платежи / карты / безопасность")
-System_Ext(pushp, "FCM / APNs", "ACK push")
-System_Ext(emailp, "Email-провайдер", "Синхронный accept")
-System_Ext(smsp, "SMS-агрегатор", "Синхронный accept")
-
-System_Boundary(np, "Notification Platform") {
-  Container(api, "Ingest API", "HTTP", "Запись в базу и публикация в очередь")
-  ContainerDb(pg, "PostgreSQL", "PostgreSQL", "Уведомления / попытки / настройки")
-  Container(rabbit, "RabbitMQ", "RabbitMQ", "Очереди транзакций сервиса и маркетинга")
-  Container(worker, "Delivery Worker", "worker", "Порядок каналов и вызов адаптера")
-  Container(push, "Push Adapter", "worker", "Вызов FCM или APNs")
-  Container(email, "Email Adapter", "worker", "Вызов email-провайдера")
-  Container(sms, "SMS Adapter", "worker", "Вызов SMS-агрегатора")
-  ContainerDb(redis, "Redis", "Redis", "Кэш настроек и предохранители")
-}
-
-Rel(producers, api, "Команда", "HTTPS")
-Rel(api, pg, "Запись уведомления", "SQL")
-Rel(api, rabbit, "Идентификатор уведомления", "AMQP")
-Rel(support, api, "Чтение статуса", "HTTPS")
-Rel(rabbit, worker, "Команда доставки", "AMQP")
-Rel(worker, pg, "Попытка и статус", "SQL")
-Rel(worker, redis, "Кэш и предохранитель", "Redis")
-Rel(worker, push, "Push", "вызов")
-Rel(worker, email, "Email", "вызов")
-Rel(worker, sms, "SMS", "вызов")
-Rel(push, pushp, "Отправка и статус", "HTTPS")
-Rel(email, emailp, "Отправка и статус", "HTTPS")
-Rel(sms, smsp, "Отправка и статус", "HTTPS")
-
-@enduml
-```
+![Вариант 2. C4 Container](diagrams/v2-c4.png)
 
 #### Sequence: основной сценарий
 
-```plantuml
-@startuml
-title Вариант 2. Основной сценарий: push принят
-
-actor "Сервис переводов" as src
-participant "Ingest API" as api
-database "PostgreSQL" as pg
-queue "RabbitMQ" as rabbit
-participant "Delivery Worker" as worker
-participant "Push Adapter" as push
-participant "FCM / APNs" as fcm
-
-src -> api: Команда, ключ идемпотентности
-api -> pg: Фиксация уведомления
-api -> rabbit: Публикация id\nподтверждение брокера
-api --> src: Принято
-rabbit -> worker: Команда
-worker -> pg: Попытка push «выполняется»
-worker -> push: Отправка, ключ push
-push -> fcm: Отправка
-fcm --> push: ACK
-push --> worker: Принят
-worker -> pg: Уведомление «доставлено»
-worker -> rabbit: ack
-note over worker, fcm
-  Email и SMS не вызываются.
-  Повтор команды отправителя
-  вернёт тот же идентификатор.
-end note
-
-@enduml
-```
+![Вариант 2. Основной сценарий](diagrams/v2-main.png)
 
 #### Sequence: failover
 
-```plantuml
-@startuml
-title Вариант 2. Failover: отказ push, затем email или SMS
-
-participant "Delivery Worker" as worker
-database "PostgreSQL" as pg
-queue "RabbitMQ" as rabbit
-participant "Push Adapter" as push
-participant "FCM / APNs" as fcm
-participant "Email Adapter" as email
-participant "Email-провайдер" as esp
-participant "SMS Adapter" as sms
-
-worker -> push: Отправка, ключ push
-push -> fcm: Отправка
-fcm --> push: Отказ
-push --> worker: Отказ
-worker -> pg: Попытка push закрыта\nпопытка email «выполняется»
-
-alt Email принял сообщение
-  worker -> email: Отправка, ключ email
-  email -> esp: Отправка
-  esp --> email: ACK
-  email --> worker: Принят
-  worker -> pg: Уведомление «доставлено»
-  worker -> rabbit: ack
-  note over sms
-    SMS не вызывается.
-  end note
-else Email тоже отвергнут
-  worker -> email: Отправка, ключ email
-  email -> esp: Отправка
-  esp --> email: Отказ
-  email --> worker: Отказ
-  worker -> pg: Попытка SMS «выполняется»
-  worker -> sms: Отправка, ключ SMS
-  note over sms
-    Повторы этого канала идут с тем же ключом.
-    ack очереди после записи итога.
-  end note
-end
-
-@enduml
-```
+![Вариант 2. Failover](diagrams/v2-failover.png)
 
 Потерянный ответ воркер повторяет в тот же канал с тем же ключом и только потом меняет канал. Сообщение RabbitMQ остаётся неподтверждённым, пока итог не записан в PostgreSQL. Повторная доставка из очереди сверяется со статусом в базе и не шлёт второй канал после ACK.
 

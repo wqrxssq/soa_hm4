@@ -1,0 +1,38 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_TOP_DOWN()
+title Вариант 2. C4 Container. Очереди RabbitMQ
+
+Person(support, "Поддержка", "Читает статус доставки")
+System_Ext(producers, "Сервисы-заказчики", "Переводы / платежи / карты / безопасность")
+System_Ext(pushp, "FCM / APNs", "ACK push")
+System_Ext(emailp, "Email-провайдер", "Синхронный accept")
+System_Ext(smsp, "SMS-агрегатор", "Синхронный accept")
+
+System_Boundary(np, "Notification Platform") {
+  Container(api, "Ingest API", "HTTP", "Запись в базу и публикация в очередь")
+  ContainerDb(pg, "PostgreSQL", "PostgreSQL", "Уведомления / попытки / настройки")
+  Container(rabbit, "RabbitMQ", "RabbitMQ", "Очереди транзакций сервиса и маркетинга")
+  Container(worker, "Delivery Worker", "worker", "Порядок каналов и вызов адаптера")
+  Container(push, "Push Adapter", "worker", "Вызов FCM или APNs")
+  Container(email, "Email Adapter", "worker", "Вызов email-провайдера")
+  Container(sms, "SMS Adapter", "worker", "Вызов SMS-агрегатора")
+  ContainerDb(redis, "Redis", "Redis", "Кэш настроек и предохранители")
+}
+
+Rel(producers, api, "Команда", "HTTPS")
+Rel(api, pg, "Запись уведомления", "SQL")
+Rel(api, rabbit, "Идентификатор уведомления", "AMQP")
+Rel(support, api, "Чтение статуса", "HTTPS")
+Rel(rabbit, worker, "Команда доставки", "AMQP")
+Rel(worker, pg, "Попытка и статус", "SQL")
+Rel(worker, redis, "Кэш и предохранитель", "Redis")
+Rel(worker, push, "Push", "вызов")
+Rel(worker, email, "Email", "вызов")
+Rel(worker, sms, "SMS", "вызов")
+Rel(push, pushp, "Отправка и статус", "HTTPS")
+Rel(email, emailp, "Отправка и статус", "HTTPS")
+Rel(sms, smsp, "Отправка и статус", "HTTPS")
+
+@enduml

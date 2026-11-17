@@ -1,0 +1,42 @@
+@startuml
+title Вариант 2. Failover: отказ push, затем email или SMS
+
+participant "Delivery Worker" as worker
+database "PostgreSQL" as pg
+queue "RabbitMQ" as rabbit
+participant "Push Adapter" as push
+participant "FCM / APNs" as fcm
+participant "Email Adapter" as email
+participant "Email-провайдер" as esp
+participant "SMS Adapter" as sms
+
+worker -> push: Отправка, ключ push
+push -> fcm: Отправка
+fcm --> push: Отказ
+push --> worker: Отказ
+worker -> pg: Попытка push закрыта\nпопытка email «выполняется»
+
+alt Email принял сообщение
+  worker -> email: Отправка, ключ email
+  email -> esp: Отправка
+  esp --> email: ACK
+  email --> worker: Принят
+  worker -> pg: Уведомление «доставлено»
+  worker -> rabbit: ack
+  note over sms
+    SMS не вызывается.
+  end note
+else Email тоже отвергнут
+  worker -> email: Отправка, ключ email
+  email -> esp: Отправка
+  esp --> email: Отказ
+  email --> worker: Отказ
+  worker -> pg: Попытка SMS «выполняется»
+  worker -> sms: Отправка, ключ SMS
+  note over sms
+    Повторы этого канала идут с тем же ключом.
+    ack очереди после записи итога.
+  end note
+end
+
+@enduml

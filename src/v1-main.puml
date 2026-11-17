@@ -1,0 +1,35 @@
+@startuml
+title Вариант 1. Основной сценарий: push принят
+
+actor "Сервис переводов" as src
+participant "Ingest API" as api
+database "PostgreSQL" as pg
+participant "Outbox Relay" as relay
+queue "Kafka" as kafka
+participant "Delivery Router" as router
+database "Redis" as redis
+participant "Push Adapter" as push
+participant "FCM / APNs" as fcm
+
+src -> api: Команда\nключ идемпотентности
+api -> pg: Фиксация уведомления и outbox
+api --> src: Принято, идентификатор
+pg -> relay: Сигнал outbox
+relay -> kafka: Команда доставки
+kafka -> router: Команда
+router -> redis: Снимок предпочтения
+router -> pg: Одна попытка push «выполняется»
+router -> kafka: Команда канала push
+kafka -> push: Команда
+push -> fcm: Отправка\nключ notification+push
+fcm --> push: ACK, внешний идентификатор
+push -> kafka: Исход: принят
+kafka -> router: Исход
+router -> pg: Уведомление «доставлено»
+note over router, fcm
+  Email и SMS не вызываются.
+  Повтор команды отправителя
+  вернёт тот же идентификатор.
+end note
+
+@enduml

@@ -1,0 +1,30 @@
+@startuml
+title Вариант 2. Основной сценарий: push принят
+
+actor "Сервис переводов" as src
+participant "Ingest API" as api
+database "PostgreSQL" as pg
+queue "RabbitMQ" as rabbit
+participant "Delivery Worker" as worker
+participant "Push Adapter" as push
+participant "FCM / APNs" as fcm
+
+src -> api: Команда, ключ идемпотентности
+api -> pg: Фиксация уведомления
+api -> rabbit: Публикация id\nподтверждение брокера
+api --> src: Принято
+rabbit -> worker: Команда
+worker -> pg: Попытка push «выполняется»
+worker -> push: Отправка, ключ push
+push -> fcm: Отправка
+fcm --> push: ACK
+push --> worker: Принят
+worker -> pg: Уведомление «доставлено»
+worker -> rabbit: ack
+note over worker, fcm
+  Email и SMS не вызываются.
+  Повтор команды отправителя
+  вернёт тот же идентификатор.
+end note
+
+@enduml

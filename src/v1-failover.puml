@@ -1,0 +1,47 @@
+@startuml
+title Вариант 1. Failover: отказ push, затем email или SMS
+
+participant "Delivery Router" as router
+database "PostgreSQL" as pg
+queue "Kafka" as kafka
+participant "Push Adapter" as push
+participant "FCM / APNs" as fcm
+participant "Email Adapter" as email
+participant "Email-провайдер" as esp
+participant "SMS Adapter" as sms
+
+push -> fcm: Отправка, ключ push
+fcm --> push: Отказ
+push -> kafka: Исход: отвергнут
+kafka -> router: Исход
+router -> pg: Попытка push закрыта\nпопытка email «выполняется»
+router -> kafka: Команда канала email
+note over router
+  Пока email не завершён, SMS не вызывается.
+end note
+
+kafka -> email: Команда
+email -> esp: Отправка, ключ email
+
+alt Email принял сообщение
+  esp --> email: ACK
+  email -> kafka: Исход: принят
+  kafka -> router: Исход
+  router -> pg: Уведомление «доставлено»
+  note over sms
+    SMS не вызывается.
+    Второй ACK по этому уведомлению запрещён.
+  end note
+else Email тоже отвергнут
+  esp --> email: Отказ
+  email -> kafka: Исход: отвергнут
+  kafka -> router: Исход
+  router -> pg: Попытка SMS «выполняется»
+  router -> kafka: Команда канала SMS
+  kafka -> sms: Команда
+  note over sms
+    Повторы этого канала идут с тем же ключом SMS.
+  end note
+end
+
+@enduml

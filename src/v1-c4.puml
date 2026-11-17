@@ -1,0 +1,44 @@
+@startuml
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_TOP_DOWN()
+title Вариант 1. C4 Container. Транзакционная доставка
+
+Person(support, "Поддержка", "Читает статус доставки")
+System_Ext(producers, "Сервисы-заказчики", "Переводы / платежи / карты / безопасность")
+System_Ext(pushp, "FCM / APNs", "ACK push")
+System_Ext(emailp, "Email-провайдер", "Синхронный accept")
+System_Ext(smsp, "SMS-агрегатор", "Синхронный accept")
+
+System_Boundary(np, "Notification Platform") {
+  Container(api, "Ingest API", "HTTP", "Ответ только после записи приёма")
+  ContainerDb(pg, "PostgreSQL", "PostgreSQL", "Уведомления / попытки / outbox / настройки")
+  Container(relay, "Outbox Relay", "worker", "Публикует outbox в Kafka")
+  Container(kafka, "Kafka", "Apache Kafka", "Команды и исходы транзакций")
+  Container(router, "Delivery Router", "worker", "Политика каналов и одна активная попытка")
+  ContainerDb(redis, "Redis", "Redis", "Кэш настроек и предохранители")
+  Container(push, "Push Adapter", "worker", "Вызов FCM или APNs")
+  Container(email, "Email Adapter", "worker", "Вызов email-провайдера")
+  Container(sms, "SMS Adapter", "worker", "Вызов SMS-агрегатора")
+  Container(recon, "Reconciliation", "worker", "Неизвестные исходы и зависшие попытки")
+}
+
+Rel(producers, api, "Команда уведомления", "HTTPS")
+Rel(api, pg, "Уведомление и outbox", "SQL")
+Rel(support, api, "Чтение статуса", "HTTPS")
+Rel(relay, pg, "Непубликованный outbox", "SQL")
+Rel(relay, kafka, "Команда доставки", "Kafka")
+Rel(kafka, router, "Команда", "Kafka")
+Rel(router, redis, "Кэш и предохранитель", "Redis")
+Rel(router, pg, "Попытка и статус", "SQL")
+Rel(router, kafka, "Команда канала", "Kafka")
+Rel(kafka, push, "Push", "Kafka")
+Rel(kafka, email, "Email", "Kafka")
+Rel(kafka, sms, "SMS", "Kafka")
+Rel(push, pushp, "Отправка и статус", "HTTPS")
+Rel(email, emailp, "Отправка и статус", "HTTPS")
+Rel(sms, smsp, "Отправка и статус", "HTTPS")
+Rel(recon, pg, "Сверка попытки", "SQL")
+Rel(recon, pushp, "Статус по ключу", "HTTPS")
+
+@enduml
